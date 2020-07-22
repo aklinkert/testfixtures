@@ -30,6 +30,7 @@ type Loader struct {
 	templateRightDelim string
 	templateOptions    []string
 	templateData       interface{}
+	noClean            bool
 }
 
 type fixtureFile struct {
@@ -178,6 +179,14 @@ func DangerousSkipTestDatabaseCheck() func(*Loader) error {
 	}
 }
 
+// NoClean informs Loader to not clean tables.
+func NoClean() func(*Loader) error {
+	return func(l *Loader) error {
+		l.noClean = true
+		return nil
+	}
+}
+
 // Directory informs Loader to load YAML files from a given directory.
 func Directory(dir string) func(*Loader) error {
 	return func(l *Loader) error {
@@ -319,8 +328,11 @@ func (l *Loader) Load() error {
 			if !modified {
 				continue
 			}
-			if err := file.delete(tx, l.helper); err != nil {
-				return err
+
+			if !l.noClean {
+				if err := file.delete(tx, l.helper); err != nil {
+					return err
+				}
 			}
 
 			err = l.helper.whileInsertOnTable(tx, file.fileNameWithoutExtension(), func() error {
