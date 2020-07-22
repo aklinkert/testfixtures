@@ -31,6 +31,8 @@ type Loader struct {
 	templateRightDelim string
 	templateOptions    []string
 	templateData       interface{}
+
+	noClean bool
 }
 
 type fixtureFile struct {
@@ -175,6 +177,14 @@ func ResetSequencesTo(value int64) func(*Loader) error {
 func DangerousSkipTestDatabaseCheck() func(*Loader) error {
 	return func(l *Loader) error {
 		l.skipTestDatabaseCheck = true
+		return nil
+	}
+}
+
+// NoClean informs Loader to not delete records before inserting fixtures
+func NoClean() func(*Loader) error {
+	return func(l *Loader) error {
+		l.noClean = true
 		return nil
 	}
 }
@@ -336,13 +346,15 @@ func (l *Loader) Load() error {
 
 		// Delete existing table data for specified fixtures before populating the data. This helps avoid
 		// DELETE CASCADE constraints when using the `UseAlterConstraint()` option.
-		for _, file := range l.fixturesFiles {
-			modified := modifiedTables[file.fileNameWithoutExtension()]
-			if !modified {
-				continue
-			}
-			if err := file.delete(tx, l.helper); err != nil {
-				return err
+		if !l.noClean {
+			for _, file := range l.fixturesFiles {
+				modified := modifiedTables[file.fileNameWithoutExtension()]
+				if !modified {
+					continue
+				}
+				if err := file.delete(tx, l.helper); err != nil {
+					return err
+				}
 			}
 		}
 
