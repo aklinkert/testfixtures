@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"testing"
+	"text/template"
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
@@ -36,6 +37,25 @@ func TestRequiredOptions(t *testing.T) {
 	})
 }
 
+func until(max int) (result []int) {
+	for i := 0; i < max; i++ {
+		result = append(result, i)
+	}
+	return
+}
+
+func add(numbers ...int) (result int) {
+	for _, n := range numbers {
+		result += n
+	}
+	return
+}
+
+var funcMap = template.FuncMap{
+	"until": until,
+	"add":   add,
+}
+
 func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additionalOptions ...func(*Loader) error) {
 	db, err := sql.Open(dialect, connStr)
 	if err != nil {
@@ -43,6 +63,9 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 		return
 	}
 	defer db.Close()
+
+	db.SetMaxIdleConns(100)
+	db.SetMaxOpenConns(100)
 
 	if err := db.Ping(); err != nil {
 		t.Errorf("failed to connect to database: %v", err)
@@ -84,6 +107,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -115,6 +139,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -141,6 +166,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -172,6 +198,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -205,6 +232,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -234,6 +262,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -263,6 +292,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -294,6 +324,7 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 				Database(db),
 				Dialect(dialect),
 				Template(),
+				TemplateFuncs(funcMap),
 				TemplateData(map[string]interface{}{
 					"PostIds": []int{1, 2},
 					"TagIds":  []int{1, 2, 3},
@@ -376,11 +407,45 @@ func testLoader(t *testing.T, dialect, connStr, schemaFilePath string, additiona
 			t.Errorf("cannot insert post: %v", err)
 		}
 	})
+
+	t.Run("Parallel", func(t *testing.T) {
+		options := append(
+			[]func(*Loader) error{
+				Database(db),
+				Dialect(dialect),
+				Template(),
+				TemplateFuncs(funcMap),
+				TemplateData(map[string]interface{}{
+					"PostIds": []int{1, 2},
+					"TagIds":  []int{1, 2, 3},
+				}),
+				Directory("testdata/fixtures"),
+				Parallel(100),
+			},
+			additionalOptions...,
+		)
+		l, err := New(options...)
+		if err != nil {
+			t.Errorf("failed to create Loader: %v", err)
+			return
+		}
+		if err := l.Load(); err != nil {
+			t.Errorf("cannot load fixtures: %v", err)
+		}
+
+		// Call load again to test against a database with existing data.
+		if err := l.Load(); err != nil {
+			t.Errorf("cannot load fixtures: %v", err)
+		}
+
+		assertFixturesLoaded(t, l)
+	})
+
 }
 
 func assertFixturesLoaded(t *testing.T, l *Loader) {
 	assertCount(t, l, "posts", 2)
-	assertCount(t, l, "comments", 4)
+	assertCount(t, l, "comments", 4004)
 	assertCount(t, l, "tags", 3)
 	assertCount(t, l, "posts_tags", 6)
 	assertCount(t, l, "users", 2)

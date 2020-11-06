@@ -13,6 +13,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/xxjwxc/gowp/workpool"
 	"gopkg.in/yaml.v2"
 )
 
@@ -32,7 +33,8 @@ type Loader struct {
 	templateOptions    []string
 	templateData       interface{}
 
-	noClean bool
+	noClean         bool
+	parallelWorkers int
 }
 
 type fixtureFile struct {
@@ -185,6 +187,18 @@ func DangerousSkipTestDatabaseCheck() func(*Loader) error {
 func NoClean() func(*Loader) error {
 	return func(l *Loader) error {
 		l.noClean = true
+		return nil
+	}
+}
+
+// Parallel informs Loader to use a worker pool to insert the fixtures
+func Parallel(workers int) func(*Loader) error {
+	if workers <= 0 {
+		panic(fmt.Sprintf("invalid worker count %v", workers))
+	}
+
+	return func(l *Loader) error {
+		l.parallelWorkers = workers
 		return nil
 	}
 }
@@ -358,35 +372,82 @@ func (l *Loader) Load() error {
 			}
 		}
 
-		for _, file := range l.fixturesFiles {
-			modified := modifiedTables[file.fileNameWithoutExtension()]
-			if !modified {
-				continue
-			}
-			err := l.helper.whileInsertOnTable(tx, file.fileNameWithoutExtension(), func() error {
-				for j, i := range file.insertSQLs {
-					if _, err := tx.Exec(i.sql, i.params...); err != nil {
-						return &InsertError{
-							Err:    err,
-							File:   file.fileName,
-							Index:  j,
-							SQL:    i.sql,
-							Params: i.params,
-						}
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+		if l.parallelWorkers > 0 {
+			return l.loadParallel(tx, modifiedTables)
 		}
-		return nil
+
+		return l.loadSequential(tx, modifiedTables)
 	})
 	if err != nil {
 		return err
 	}
 	return l.helper.afterLoad(l.db)
+}
+
+func (l *Loader) loadSequential(tx *sql.Tx, modifiedTables map[string]bool) error {
+	for _, file := range l.fixturesFiles {
+		modified := modifiedTables[file.fileNameWithoutExtension()]
+		if !modified {
+			continue
+		}
+
+		err := l.helper.whileInsertOnTable(tx, file.fileNameWithoutExtension(), func() error {
+			for j, i := range file.insertSQLs {
+				if _, err := tx.Exec(i.sql, i.params...); err != nil {
+					return &InsertError{
+						Err:    err,
+						File:   file.fileName,
+						Index:  j,
+						SQL:    i.sql,
+						Params: i.params,
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (l *Loader) loadParallel(tx *sql.Tx, modifiedTables map[string]bool) error {
+	for _, file := range l.fixturesFiles {
+		modified := modifiedTables[file.fileNameWithoutExtension()]
+		if !modified {
+			continue
+		}
+
+		err := l.helper.whileInsertOnTable(tx, file.fileNameWithoutExtension(), func() error {
+			pool := workpool.New(l.parallelWorkers)
+			for j := range file.insertSQLs {
+				pool.Do(func(j int) func() error {
+					return func() error {
+						if _, err := tx.Exec(file.insertSQLs[j].sql, file.insertSQLs[j].params...); err != nil {
+							return &InsertError{
+								Err:    err,
+								File:   file.fileName,
+								Index:  j,
+								SQL:    file.insertSQLs[j].sql,
+								Params: file.insertSQLs[j].params,
+							}
+						}
+
+						return nil
+					}
+				}(j))
+			}
+
+			return pool.Wait()
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // InsertError will be returned if any error happens on database while
