@@ -414,40 +414,57 @@ func (l *Loader) loadSequential(tx *sql.Tx, modifiedTables map[string]bool) erro
 }
 
 func (l *Loader) loadParallel(tx *sql.Tx, modifiedTables map[string]bool) error {
+	workers := 0
 	for _, file := range l.fixturesFiles {
-		modified := modifiedTables[file.fileNameWithoutExtension()]
+		if modifiedTables[file.fileNameWithoutExtension()] {
+			workers++
+		}
+	}
+
+	filesPool := workpool.New(workers)
+	for fileIndex := range l.fixturesFiles {
+		modified := modifiedTables[l.fixturesFiles[fileIndex].fileNameWithoutExtension()]
 		if !modified {
 			continue
 		}
 
-		err := l.helper.whileInsertOnTable(tx, file.fileNameWithoutExtension(), func() error {
-			pool := workpool.New(l.parallelWorkers)
-			for j := range file.insertSQLs {
-				pool.Do(func(j int) func() error {
-					return func() error {
-						if _, err := tx.Exec(file.insertSQLs[j].sql, file.insertSQLs[j].params...); err != nil {
-							return &InsertError{
-								Err:    err,
-								File:   file.fileName,
-								Index:  j,
-								SQL:    file.insertSQLs[j].sql,
-								Params: file.insertSQLs[j].params,
-							}
-						}
+		filesPool.Do(func(file *fixtureFile) func() error {
+			return l.insertTable(tx, file, l.parallelWorkers/workers)
+		}(l.fixturesFiles[fileIndex]))
+	}
 
-						return nil
-					}
-				}(j))
+	return filesPool.Wait()
+}
+
+func (l *Loader) insertTable(tx *sql.Tx, file *fixtureFile, parallel int) func() error {
+	return func() error {
+		return l.helper.whileInsertOnTable(tx, file.fileNameWithoutExtension(), func() error {
+			pool := workpool.New(parallel)
+			for index := range file.insertSQLs {
+				pool.Do(func(stmt *insertSQL, index int) func() error {
+					return l.insertRow(tx, file, stmt, index)
+				}(&file.insertSQLs[index], index))
 			}
 
 			return pool.Wait()
 		})
-		if err != nil {
-			return err
-		}
 	}
+}
 
-	return nil
+func (l *Loader) insertRow(tx *sql.Tx, file *fixtureFile, stmt *insertSQL, index int) func() error {
+	return func() error {
+		if _, err := tx.Exec(stmt.sql, stmt.params...); err != nil {
+			return &InsertError{
+				Err:    err,
+				File:   file.fileName,
+				Index:  index,
+				SQL:    stmt.sql,
+				Params: stmt.params,
+			}
+		}
+
+		return nil
+	}
 }
 
 // InsertError will be returned if any error happens on database while
